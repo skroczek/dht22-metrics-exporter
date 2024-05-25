@@ -20,22 +20,34 @@ type EnvironmentData struct {
 }
 
 var (
-	temperatureGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+	temperatureGaugeSensor1 = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "box_temperature_celsius",
 		Help: "Current box temperature in celsius",
 	})
-	humidityGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+	humidityGaugeSensor1 = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "box_humidity_percentage",
 		Help: "Current box humidity in percentage",
 	})
-	dataFilePath = getEnv("DATA_FILE_PATH", "data.json")
-	serverAddr   = getEnv("SERVER_ADDR", ":8080")
+
+	temperatureGaugeSensor2 = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "room_temperature_celsius",
+		Help: "Current room temperature in celsius",
+	})
+	humidityGaugeSensor2 = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "room_humidity_percentage",
+		Help: "Current room humidity in percentage",
+	})
+	dataFilePathSensor1 = getEnv("DATA_FILE_PATH1", "/var/lib/dht22/data_4.json")
+	dataFilePathSensor2 = getEnv("DATA_FILE_PATH2", "/var/lib/dht22/data_22.json")
+	serverAddr          = getEnv("SERVER_ADDR", ":8080")
 )
 
 func init() {
-	// Register the gauge with Prometheus's default registry
-	prometheus.MustRegister(temperatureGauge)
-	prometheus.MustRegister(humidityGauge)
+	// Register the gauges with Prometheus's default registry
+	prometheus.MustRegister(temperatureGaugeSensor1)
+	prometheus.MustRegister(humidityGaugeSensor1)
+	prometheus.MustRegister(temperatureGaugeSensor2)
+	prometheus.MustRegister(humidityGaugeSensor2)
 }
 
 func getEnv(key, fallback string) string {
@@ -45,18 +57,18 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func readEnvironmentData() (*EnvironmentData, error) {
-	fileInfo, err := os.Stat(dataFilePath)
+func readEnvironmentData(filePath string) (*EnvironmentData, error) {
+	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		return nil, err
 	}
 
 	// Check if the file is older than 5 minutes
 	if time.Since(fileInfo.ModTime()) > 5*time.Minute {
-		return nil, fmt.Errorf("data file is older than 5 minutes")
+		return nil, fmt.Errorf("data file %s is older than 5 minutes", filePath)
 	}
 
-	file, err := os.Open(dataFilePath)
+	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -73,19 +85,19 @@ func readEnvironmentData() (*EnvironmentData, error) {
 	return &data, nil
 }
 
-func recordMetrics() {
+func recordMetrics(sensorID int, dataFilePath string, temperatureGauge, humidityGauge prometheus.Gauge) {
 	for {
-		data, err := readEnvironmentData()
+		data, err := readEnvironmentData(dataFilePath)
 		if err != nil {
-			log.Printf("Error reading environment data: %v", err)
-			// Set gauges to an invalid state or clear them
+			log.Printf("Error reading environment data from sensor %d: %v", sensorID, err)
 			temperatureGauge.Set(math.NaN())
 			humidityGauge.Set(math.NaN())
 			time.Sleep(10 * time.Second)
 			continue
+		} else {
+			temperatureGauge.Set(data.Temperature)
+			humidityGauge.Set(data.Humidity)
 		}
-		temperatureGauge.Set(data.Temperature)
-		humidityGauge.Set(data.Humidity)
 		time.Sleep(30 * time.Second) // adjust the interval as needed
 	}
 }
@@ -99,7 +111,8 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
-	go recordMetrics()
+	go recordMetrics(1, dataFilePathSensor1, temperatureGaugeSensor1, humidityGaugeSensor1)
+	go recordMetrics(2, dataFilePathSensor2, temperatureGaugeSensor2, humidityGaugeSensor2)
 
 	http.Handle("/metrics", loggingMiddleware(promhttp.Handler()))
 	log.Printf("Starting server at %s", serverAddr)
